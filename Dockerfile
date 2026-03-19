@@ -21,17 +21,15 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# --- Senior DevOps Optimization ---
-# 1. Upgrade core build tools globally first.
-# 2. We pin setuptools < 70 to keep pkg_resources for legacy builds (Whisper).
-# 3. We pre-install numpy because it's a build-time dependency for Whisper wheels.
+# Upgrade core build tools globally first.
+# Pinning setuptools < 70 keeps pkg_resources available for Whisper's build script.
+# We also pre-install numpy to satisfy Whisper's build-time requirements.
 RUN pip install --no-cache-dir --upgrade pip "setuptools<70" wheel "numpy==1.26.4"
 
-# 4. Install remaining requirements WITHOUT build isolation.
-# This prevents pip from creating a fresh (and broken) env for each package.
+# Install remaining requirements WITHOUT build isolation.
+# This ensures pip uses our global setuptools/numpy to build Whisper.
 COPY requirements.txt .
 RUN pip install --no-cache-dir --no-build-isolation -r requirements.txt
-# ----------------------------------
 
 # Copy application code
 COPY . .

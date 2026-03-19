@@ -1,15 +1,12 @@
 fastapi==0.110.0
 uvicorn==0.29.0
 pydantic==2.6.4
-python-multipart==0.0.9
+python-multipart==0.0.19
 requests==2.31.0
 cloudinary==1.38.0
 python-dotenv==1.0.1
-numpy==1.26.4
 openai-whisper==20231117
-langchain==0.1.12
 langchain-ollama==0.1.1
 pymongo==4.6.2
 weasyprint==61.2
 markdown==3.6
-setuptools==69.5.1
