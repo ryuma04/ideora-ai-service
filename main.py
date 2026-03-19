@@ -56,8 +56,7 @@ app = FastAPI(title="Ideora AI Service")
 # Fallback to local Ollama if no URL is provided
 OLLAMA_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
 
-# Load Whisper model (CPU-based for compatibility)
-model = whisper.load_model("base")
+# Initialize LLM only at startup (very lightweight)
 llm = OllamaLLM(model="ministral-3:3b", base_url=OLLAMA_URL)
 
 class RetrievalRequest(BaseModel):
@@ -66,8 +65,17 @@ class RetrievalRequest(BaseModel):
     brainstormingUrl: Optional[str] = ""
 
 def transcribe_audio(audio_path: str) -> str:
+    # Memory Optimization: Load model on-demand and use 'tiny' version for free tier
+    print(f"Loading Whisper model (tiny)...")
+    temp_model = whisper.load_model("tiny")
     print(f"Transcribing {audio_path}...")
-    result = model.transcribe(audio_path)
+    result = temp_model.transcribe(audio_path)
+    
+    # Explicitly clear memory after task
+    del temp_model
+    import gc
+    gc.collect()
+    
     return result["text"]
 
 def generate_mom(transcript: str, brainstorming: str, date: str, participants: List[str]) -> str:
