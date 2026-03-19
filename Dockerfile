@@ -21,16 +21,19 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Step 1: Upgrade core build tools
-# We pin setuptools to 69.5.1 because versions >= 70 removed pkg_resources, 
-# which some legacy packages (like whisper) still need during build.
-RUN pip install --no-cache-dir --upgrade pip "setuptools<70" wheel
+# --- Senior DevOps Optimization ---
+# 1. Upgrade core build tools globally first.
+# 2. We pin setuptools < 70 to keep pkg_resources for legacy builds (Whisper).
+# 3. We pre-install numpy because it's a build-time dependency for Whisper wheels.
+RUN pip install --no-cache-dir --upgrade pip "setuptools<70" wheel "numpy==1.26.4"
 
-# Step 2: Copy requirements and install
+# 4. Install remaining requirements WITHOUT build isolation.
+# This prevents pip from creating a fresh (and broken) env for each package.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --no-build-isolation -r requirements.txt
+# ----------------------------------
 
-# Step 3: Copy application code
+# Copy application code
 COPY . .
 
 # Expose port
