@@ -21,8 +21,8 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Upgrade pip first to ensure better wheel support
-RUN pip install --no-cache-dir --upgrade pip
+# Upgrade pip and its build tools first to ensure better wheel support
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Copy requirements and install
 COPY requirements.txt .
