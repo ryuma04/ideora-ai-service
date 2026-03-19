@@ -27,7 +27,6 @@ from typing import List, Optional
 import markdown
 from weasyprint import HTML, CSS
 from langchain_ollama import OllamaLLM
-import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart, MIMEBase
 from email.mime.application import MIMEApplication

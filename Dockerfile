@@ -3,7 +3,6 @@ FROM python:3.11-slim
 
 # Install system dependencies for WeasyPrint and Whisper
 RUN apt-get update && apt-get install -y \
-    python3-pip \
     python3-cffi \
     python3-brotli \
     libpango-1.0-0 \
@@ -21,6 +20,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy requirements and install
+# Note: Pinned versions in requirements.txt prevent version loops
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -31,5 +31,5 @@ COPY . .
 EXPOSE 8000
 
 # Command to run the application
-# Note: For production on Render, we use uvicorn
+# Use workers to handle multiple concurrent tasks if needed
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
