@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: ideora-ai-service
+    runtime: docker
+    plan: starter # Starter plan is recommended for AI models
+    envVars:
+      - key: CLOUDINARY_CLOUD_NAME
+        fromEnvVar: CLOUDINARY_CLOUD_NAME
+      - key: CLOUDINARY_API_KEY
+        fromEnvVar: CLOUDINARY_API_KEY
+      - key: CLOUDINARY_API_SECRET
+        fromEnvVar: CLOUDINARY_API_SECRET
+      - key: MONGODB_URL
+        fromEnvVar: MONGODB_URL
+      - key: GMAIL_MAIL
+        fromEnvVar: GMAIL_MAIL
+      - key: GMAIL_APP_PASSWORD
+        fromEnvVar: GMAIL_APP_PASSWORD
+      - key: OLLAMA_API_URL
+        value: "https://uncubically-heterofermentative-gertrud.ngrok-free.dev" # Or use a cloud LLM provider
+      - key: PORT
+        value: "8000"
+    healthCheckPath: /

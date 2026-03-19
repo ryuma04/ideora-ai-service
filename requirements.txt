@@ -5,3 +5,10 @@ python-multipart==0.0.9
 requests==2.31.0
 cloudinary==1.38.0
 python-dotenv==1.0.1
+openai-whisper
+langchain-ollama
+langchain
+langgraph
+pymongo
+weasyprint
+markdown
