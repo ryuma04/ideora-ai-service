@@ -21,14 +21,16 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Upgrade pip and its build tools first to ensure better wheel support
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+# Step 1: Upgrade core build tools
+# We pin setuptools to 69.5.1 because versions >= 70 removed pkg_resources, 
+# which some legacy packages (like whisper) still need during build.
+RUN pip install --no-cache-dir --upgrade pip "setuptools<70" wheel
 
-# Copy requirements and install
+# Step 2: Copy requirements and install
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Step 3: Copy application code
 COPY . .
 
 # Expose port
