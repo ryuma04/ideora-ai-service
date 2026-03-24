@@ -133,8 +133,17 @@ def send_mom_emails(emails: List[str], mom_text: str, pdf_path: str):
 
     msg = MIMEMultipart('mixed')
     msg['From'] = f"Ideora Platform <{sender_email}>"
+    msg['To'] = ", ".join(emails) # Good practice to include To header
     msg['Subject'] = "Meeting Minutes Ready - Ideora"
-    msg.attach(MIMEText(f"<h2>Meeting Minutes Ready</h2><p>Attached is the MoM as a PDF.</p>", 'html'))
+    
+    html_body = f"""
+    <div style="font-family: sans-serif; color: #1e293b;">
+        <h2 style="color: #4f46e5;">Meeting Minutes Ready</h2>
+        <p>The Minutes of Meeting (MoM) have been generated and are attached as a PDF.</p>
+        <p>Best regards,<br>The Ideora Team</p>
+    </div>
+    """
+    msg.attach(MIMEText(html_body, 'html'))
 
     try:
         if os.path.exists(pdf_path):
@@ -142,13 +151,21 @@ def send_mom_emails(emails: List[str], mom_text: str, pdf_path: str):
                 part = MIMEApplication(f.read(), Name=os.path.basename(pdf_path))
                 part['Content-Disposition'] = f'attachment; filename="{os.path.basename(pdf_path)}"'
                 msg.attach(part)
-
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        
+        print("Connecting to gmail (SMTP 587)...", flush=True)
+        # Using 587 with STARTTLS is generally more robust on cloud servers
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as server:
+            print("Starting TLS...", flush=True)
+            server.starttls()
+            print("Logging in...", flush=True)
             server.login(sender_email, sender_password)
+            print("Sending mail...", flush=True)
             server.sendmail(sender_email, emails, msg.as_string())
+            
         print("Emails sent successfully!", flush=True)
     except Exception as e:
-        print(f"Failed to send email: {e}", flush=True)
+        print(f"!!! Email delivery error: {e}", flush=True)
+        traceback.print_exc()
 
 async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
     start_time = time.time()
@@ -205,11 +222,11 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
             print(f"Uploaded: {mom_url}", flush=True)
         
         # 5. DB Update
-        print(f"Step 9: Updating MongoDB collection 'meetingresource'...", flush=True)
+        print(f"Step 9: Updating MongoDB collection 'meetingresources'...", flush=True)
         update_data = {"$set": {"momReportUrl": mom_url}}
         
-        # Using singular 'meetingresource' as requested
-        res = db.meetingresource.update_one({"meetingId": ObjectId(meetingId)}, update_data, upsert=True)
+        # Using plural 'meetingresources' as requested
+        res = db.meetingresources.update_one({"meetingId": ObjectId(meetingId)}, update_data, upsert=True)
         print(f"Update Result: matched={res.matched_count}, modified={res.modified_count}", flush=True)
         
         # 6. Emails
