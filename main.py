@@ -107,14 +107,15 @@ def create_pdf(mom_text: str, output_path: str):
     try:
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", size=12)
+        pdf.set_font("Helvetica", size=12) # Use Helvetica (standard)
         
         # Simple cleanup of Markdown for PDF (FPDF doesn't handle MD)
         lines = mom_text.split('\n')
         for line in lines:
             # Basic character cleanup for PDF
             clean_line = line.encode('latin-1', 'replace').decode('latin-1')
-            pdf.multi_cell(0, 10, clean_line)
+            # Use 190 (A4 width - margins) explicitly to avoid space errors
+            pdf.multi_cell(w=190, h=10, txt=clean_line, align='L')
             
         pdf.output(output_path)
         return True
