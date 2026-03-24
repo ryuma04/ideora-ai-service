@@ -71,7 +71,7 @@ def transcribe_audio(audio_path: str) -> str:
         with open(audio_path, "rb") as file:
             transcription = groq_client.audio.transcriptions.create(
                 file=(os.path.basename(audio_path), file.read()),
-                model="distil-whisper-large-v3-en",
+                model="whisper-large-v3",
                 response_format="text",
             )
         return str(transcription)
