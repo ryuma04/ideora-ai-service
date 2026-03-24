@@ -105,22 +105,29 @@ def generate_mom(transcript: str, brainstorming: str, date: str, participants: L
 def create_pdf(mom_text: str, output_path: str):
     print(f"Step 7: Creating PDF (FPDF2)...", flush=True)
     try:
+        # FPDF2 allows for better UTF-8 handling if we use a standard font
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Helvetica", size=12) # Use Helvetica (standard)
+        pdf.set_font("Helvetica", size=12)
         
-        # Simple cleanup of Markdown for PDF (FPDF doesn't handle MD)
-        lines = mom_text.split('\n')
+        # Clean up text for latin-1 which is the default for standard PDF fonts
+        # Better: Replace bullet points and special characters that Llama 3 often uses
+        clean_text = mom_text.replace("•", "-").replace("—", "-").replace("**", "")
+        
+        # Split into lines and write to PDF
+        lines = clean_text.split('\n')
         for line in lines:
-            # Basic character cleanup for PDF
-            clean_line = line.encode('latin-1', 'replace').decode('latin-1')
-            # Use 190 (A4 width - margins) explicitly to avoid space errors
-            pdf.multi_cell(w=190, h=10, txt=clean_line, align='L')
+            # We encode to latin-1 and ignore errors to prevent crashes, 
+            # while still trying to preserve as much as possible
+            safe_line = line.encode('latin-1', 'replace').decode('latin-1')
+            pdf.multi_cell(w=190, h=8, txt=safe_line, align='L')
             
         pdf.output(output_path)
+        print(f"PDF created successfully at {output_path}", flush=True)
         return True
     except Exception as e:
-        print(f"PDF creation error (FPDF2): {e}", flush=True)
+        print(f"PDF creation error: {e}", flush=True)
+        traceback.print_exc()
         return False
 
 def send_mom_emails(emails: List[str], mom_text: str, pdf_path: str):
