@@ -5,19 +5,16 @@ import time
 import requests
 import uvicorn
 import pymongo
-import smtplib
 import cloudinary
 import cloudinary.uploader
 import markdown
 import traceback
+import resend
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import List, Optional
 from fpdf import FPDF
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart, MIMEBase
-from email.mime.application import MIMEApplication
 from bson import ObjectId
 from groq import Groq
 
@@ -39,8 +36,10 @@ db = db_client.get_database()
 print(f"Connected to MongoDB: {db.name}", flush=True)
 
 # Groq Configuration
-groq_api_key = os.getenv("GROQ_API_KEY")
-groq_client = Groq(api_key=groq_api_key)
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+# Resend Configuration
+resend.api_key = os.getenv("RESEND_API_KEY")
 
 app = FastAPI(title="Ideora AI Service (Groq Edition)")
 
@@ -105,20 +104,15 @@ def generate_mom(transcript: str, brainstorming: str, date: str, participants: L
 def create_pdf(mom_text: str, output_path: str):
     print(f"Step 7: Creating PDF (FPDF2)...", flush=True)
     try:
-        # FPDF2 allows for better UTF-8 handling if we use a standard font
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Helvetica", size=12)
         
-        # Clean up text for latin-1 which is the default for standard PDF fonts
-        # Better: Replace bullet points and special characters that Llama 3 often uses
+        # Character cleaning for standard PDF fonts
         clean_text = mom_text.replace("•", "-").replace("—", "-").replace("**", "")
         
-        # Split into lines and write to PDF
         lines = clean_text.split('\n')
         for line in lines:
-            # We encode to latin-1 and ignore errors to prevent crashes, 
-            # while still trying to preserve as much as possible
             safe_line = line.encode('latin-1', 'replace').decode('latin-1')
             pdf.multi_cell(w=190, h=8, txt=safe_line, align='L')
             
@@ -131,47 +125,36 @@ def create_pdf(mom_text: str, output_path: str):
         return False
 
 def send_mom_emails(emails: List[str], mom_text: str, pdf_path: str):
-    print(f"Step 10: Sending emails to {emails}...", flush=True)
-    sender_email = os.getenv("GMAIL_MAIL")
-    sender_password = os.getenv("GMAIL_APP_PASSWORD")
-    if not sender_email or not sender_password:
-        print("Skipping email: GMAIL credentials not set.", flush=True)
-        return
-
-    msg = MIMEMultipart('mixed')
-    msg['From'] = f"Ideora Platform <{sender_email}>"
-    msg['To'] = ", ".join(emails) # Good practice to include To header
-    msg['Subject'] = "Meeting Minutes Ready - Ideora"
-    
-    html_body = f"""
-    <div style="font-family: sans-serif; color: #1e293b;">
-        <h2 style="color: #4f46e5;">Meeting Minutes Ready</h2>
-        <p>The Minutes of Meeting (MoM) have been generated and are attached as a PDF.</p>
-        <p>Best regards,<br>The Ideora Team</p>
-    </div>
-    """
-    msg.attach(MIMEText(html_body, 'html'))
-
+    print(f"Step 10: Sending emails to {emails} via Resend...", flush=True)
     try:
+        attachments = []
         if os.path.exists(pdf_path):
             with open(pdf_path, "rb") as f:
-                part = MIMEApplication(f.read(), Name=os.path.basename(pdf_path))
-                part['Content-Disposition'] = f'attachment; filename="{os.path.basename(pdf_path)}"'
-                msg.attach(part)
+                # Resend Python SDK expects content as list of bytes or bytes
+                pdf_content = list(f.read())
+                attachments.append({
+                    "filename": os.path.basename(pdf_path),
+                    "content": pdf_content
+                })
         
-        print("Connecting to gmail (SMTP 587)...", flush=True)
-        # Using 587 with STARTTLS is generally more robust on cloud servers
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as server:
-            print("Starting TLS...", flush=True)
-            server.starttls()
-            print("Logging in...", flush=True)
-            server.login(sender_email, sender_password)
-            print("Sending mail...", flush=True)
-            server.sendmail(sender_email, emails, msg.as_string())
-            
-        print("Emails sent successfully!", flush=True)
+        params = {
+            "from": "Ideora <onboarding@resend.dev>",
+            "to": emails,
+            "subject": "Meeting Minutes Ready - Ideora",
+            "html": f"""
+            <div style="font-family: sans-serif; color: #1e293b;">
+                <h2 style="color: #4f46e5;">Meeting Minutes Ready</h2>
+                <p>The Minutes of Meeting (MoM) have been generated and are attached as a PDF.</p>
+                <p>Best regards,<br>The Ideora Team</p>
+            </div>
+            """,
+            "attachments": attachments
+        }
+        
+        resend.Emails.send(params)
+        print("Emails sent successfully via Resend API!", flush=True)
     except Exception as e:
-        print(f"!!! Email delivery error: {e}", flush=True)
+        print(f"!!! Resend delivery error: {e}", flush=True)
         traceback.print_exc()
 
 async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
@@ -189,6 +172,7 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
         
         brainstorming_content = ""
         if brainstormingUrl:
+            print(f"Step 2: Downloading brainstorming...", flush=True)
             b_resp = requests.get(brainstormingUrl, timeout=10)
             if b_resp.status_code == 200: brainstorming_content = b_resp.text
         
@@ -196,7 +180,6 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
         transcript = transcribe_audio(audio_path)
         
         # 3. Metadata & MoM
-        # Fetch metadata using our custom logic
         meeting_date = "Not specified"
         participants_info = []
         try:
@@ -231,8 +214,6 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
         # 5. DB Update
         print(f"Step 9: Updating MongoDB collection 'meetingresources'...", flush=True)
         update_data = {"$set": {"momReportUrl": mom_url}}
-        
-        # Using plural 'meetingresources' as requested
         res = db.meetingresources.update_one({"meetingId": ObjectId(meetingId)}, update_data, upsert=True)
         print(f"Update Result: matched={res.matched_count}, modified={res.modified_count}", flush=True)
         
