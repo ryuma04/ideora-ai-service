@@ -1,6 +1,7 @@
 import os
 import datetime
 import sys
+import time
 
 # --- Cross-Platform Library Configuration ---
 # This ensures WeasyPrint and other tools find their dependencies on both Mac and Linux
@@ -53,11 +54,27 @@ db = client.get_database() # This will use the database name from the URL if pro
 app = FastAPI(title="Ideora AI Service")
 
 # Models and API Config
-# Fallback to local Ollama if no URL is provided
 OLLAMA_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
 
-# Initialize LLM only at startup (very lightweight)
+# Initialize LLM
 llm = OllamaLLM(model="ministral-3:3b", base_url=OLLAMA_URL)
+
+def check_ollama_health():
+    print(f"Checking Ollama health at {OLLAMA_URL}...")
+    try:
+        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        if response.status_code == 200:
+            print("Ollama is reachable.")
+            models = response.json().get("models", [])
+            model_names = [m["name"] for m in models]
+            if "ministral-3:3b" in model_names:
+                print("Model 'ministral-3:3b' is available.")
+            else:
+                print(f"Warning: 'ministral-3:3b' not found in models: {model_names}")
+        else:
+            print(f"Ollama returned error: {response.status_code}")
+    except Exception as e:
+        print(f"Failed to connect to Ollama at {OLLAMA_URL}: {e}")
 
 class RetrievalRequest(BaseModel):
     meetingId: str
@@ -347,41 +364,66 @@ def send_mom_emails(emails: List[str], mom_text: str, pdf_path: str):
 
 
 async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
+    start_time = time.time()
+    print(f"--- Starting process_task for meeting {meetingId} ---")
     try:
         # Create temp directory
         temp_dir = "/tmp/meeting_data"
         os.makedirs(temp_dir, exist_ok=True)
         
         # 1. Download Audio
+        print(f"Step 1: Downloading audio from {audioUrl}...")
         audio_path = f"{temp_dir}/{meetingId}_audio.webm"
         audio_response = requests.get(audioUrl)
+        if audio_response.status_code != 200:
+            raise Exception(f"Failed to download audio: {audio_response.status_code}")
         with open(audio_path, "wb") as f:
             f.write(audio_response.content)
+        print(f"Audio downloaded: {os.path.getsize(audio_path)} bytes")
         
         # 2. Download Brainstorming (if exists)
         brainstorming_content = ""
         if brainstormingUrl:
+            print(f"Step 2: Downloading brainstorming report from {brainstormingUrl}...")
             doc_response = requests.get(brainstormingUrl)
             if doc_response.status_code == 200:
                 brainstorming_content = doc_response.text
+                print(f"Brainstorming content downloaded: {len(brainstorming_content)} chars")
+            else:
+                print(f"Warning: Brainstorming report not found (status {doc_response.status_code})")
         
         # 3. Transcribe
+        print(f"Step 3: Starting transcription with Whisper (tiny)...")
+        transcribe_start = time.time()
         transcript = transcribe_audio(audio_path)
+        transcribe_end = time.time()
+        print(f"Transcription completed in {transcribe_end - transcribe_start:.2f} seconds.")
+        print(f"Transcript excerpt: {transcript[:100]}...")
         
         # 4. Get Metadata (Date and Participants)
+        print(f"Step 4: Fetching meeting metadata from MongoDB...")
         meeting_date, participants_info = get_meeting_metadata(meetingId)
+        print(f"Metadata: Date={meeting_date}, Participants count={len(participants_info)}")
         
         # 5. Generate MoM
+        print(f"Step 5: Generating MoM using Ollama ({llm.model})...")
+        llm_start = time.time()
         mom_text = generate_mom(transcript, brainstorming_content, meeting_date, participants_info)
+        llm_end = time.time()
+        print(f"MoM generated in {llm_end - llm_start:.2f} seconds.")
         
         # 6. Generate HTML for PDF styling
+        print(f"Step 6: Converting Markdown to HTML...")
         mom_html = markdown.markdown(mom_text, extensions=['tables'])
         
         # 7. Create PDF with HTML styling
+        print(f"Step 7: Creating PDF...")
         pdf_path = f"{temp_dir}/{meetingId}_MoM.pdf"
         create_pdf(mom_html, pdf_path)
+        print(f"PDF created at {pdf_path}")
         
         # 8. Upload PDF to Cloudinary
+        print(f"Step 8: Uploading PDF to Cloudinary...")
         upload_result = cloudinary.uploader.upload(
             pdf_path, 
             resource_type="raw", 
@@ -389,16 +431,20 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
             public_id=f"{meetingId}_MoM"
         )
         mom_url = upload_result["secure_url"]
+        print(f"PDF uploaded to Cloudinary: {mom_url}")
         
         # 9. Update MongoDB
-        db.meetingresources.update_one(
+        print(f"Step 9: Updating MongoDB collection 'meetingresources'...")
+        update_result = db.meetingresources.update_one(
             {"meetingId": ObjectId(meetingId)},
             {"$set": {"momReportUrl": mom_url}},
             upsert=True
         )
+        print(f"MongoDB update result: matched={update_result.matched_count}, modified={update_result.modified_count}, upserted_id={update_result.upserted_id}")
         
         # 10. Send Emails
         # Extract just emails from participants_info (format: "Name (email)")
+        print(f"Step 10: Sending emails to participants...")
         emails = []
         for info in participants_info:
             if "(" in info and ")" in info:
@@ -408,24 +454,49 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
         
         if emails:
             send_mom_emails(emails, mom_text, pdf_path)
-
-
+        else:
+            print("No valid emails found to send MoM.")
         
         # Cleanup
-        os.remove(audio_path)
-        os.remove(pdf_path)
+        if os.path.exists(audio_path): os.remove(audio_path)
+        if os.path.exists(pdf_path): os.remove(pdf_path)
         
-        print(f"Task completed successfully for meeting {meetingId}")
+        total_time = time.time() - start_time
+        print(f"--- Task completed successfully for meeting {meetingId} in {total_time:.2f}s ---")
         
     except Exception as e:
-        print(f"Error in process_task: {e}")
+        print(f"!!! Error in process_task for meeting {meetingId}: {e}")
+        import traceback
+        traceback.print_exc()
 
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
 
+@app.get("/test-ollama")
+async def test_ollama():
+    try:
+        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        return {
+            "status": "connected" if response.status_code == 200 else "error",
+            "status_code": response.status_code,
+            "models": response.json().get("models", [])
+        }
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
+
+@app.get("/test-db")
+async def test_db():
+    try:
+        # Check connection implicitly by listing collections
+        cols = db.list_collection_names()
+        return {"status": "connected", "collections": cols}
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
+
 @app.post("/process-meeting")
 async def process_meeting(request: RetrievalRequest, background_tasks: BackgroundTasks):
+    print(f"Received request to process meeting {request.meetingId}")
     # We trigger the processing in the background to avoid blocking the request
     background_tasks.add_task(process_task, request.meetingId, request.audioUrl, request.brainstormingUrl)
     return {
@@ -434,5 +505,6 @@ async def process_meeting(request: RetrievalRequest, background_tasks: Backgroun
     }
 
 if __name__ == "__main__":
+    check_ollama_health()
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
