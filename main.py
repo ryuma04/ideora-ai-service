@@ -9,7 +9,7 @@ import cloudinary
 import cloudinary.uploader
 import markdown
 import traceback
-import resend
+import base64
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -38,10 +38,7 @@ print(f"Connected to MongoDB: {db.name}", flush=True)
 # Groq Configuration
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-# Resend Configuration
-resend.api_key = os.getenv("RESEND_API_KEY")
-
-app = FastAPI(title="Ideora AI Service (Groq Edition)")
+app = FastAPI(title="Ideora AI Service (Groq Proxy Edition)")
 
 class RetrievalRequest(BaseModel):
     meetingId: str
@@ -125,36 +122,45 @@ def create_pdf(mom_text: str, output_path: str):
         return False
 
 def send_mom_emails(emails: List[str], mom_text: str, pdf_path: str):
-    print(f"Step 10: Sending emails to {emails} via Resend...", flush=True)
+    print(f"Step 10: Sending emails to {emails} via Google Proxy...", flush=True)
+    proxy_url = os.getenv("GMAIL_PROXY_URL")
+    if not proxy_url:
+        print("Skipping email: GMAIL_PROXY_URL not set.", flush=True)
+        return
+
     try:
-        attachments = []
+        pdf_base64 = ""
         if os.path.exists(pdf_path):
             with open(pdf_path, "rb") as f:
-                # Resend Python SDK expects content as list of bytes or bytes
-                pdf_content = list(f.read())
-                attachments.append({
-                    "filename": os.path.basename(pdf_path),
-                    "content": pdf_content
-                })
+                pdf_base64 = base64.b64encode(f.read()).decode('utf-8')
         
-        params = {
-            "from": "Ideora <onboarding@resend.dev>",
+        html_body = f"""
+        <div style="font-family: sans-serif; color: #1e293b;">
+            <h2 style="color: #4f46e5;">Meeting Minutes Ready</h2>
+            <p>The Minutes of Meeting (MoM) have been generated and are attached as a PDF.</p>
+            <p>Best regards,<br>The Ideora Team</p>
+        </div>
+        """
+        
+        payload = {
             "to": emails,
             "subject": "Meeting Minutes Ready - Ideora",
-            "html": f"""
-            <div style="font-family: sans-serif; color: #1e293b;">
-                <h2 style="color: #4f46e5;">Meeting Minutes Ready</h2>
-                <p>The Minutes of Meeting (MoM) have been generated and are attached as a PDF.</p>
-                <p>Best regards,<br>The Ideora Team</p>
-            </div>
-            """,
-            "attachments": attachments
+            "body": html_body,
+            "pdfBase64": pdf_base64,
+            "pdfName": os.path.basename(pdf_path),
+            "token": "ideora_secret" # Must match Google Script token
         }
         
-        resend.Emails.send(params)
-        print("Emails sent successfully via Resend API!", flush=True)
+        resp = requests.post(proxy_url, json=payload, timeout=30)
+        print(f"Proxy response: {resp.text}", flush=True)
+        
+        if resp.status_code == 200 and "success" in resp.text:
+            print("Emails sent successfully via Gmail Proxy!", flush=True)
+        else:
+            print(f"!!! Proxy delivery failure: {resp.text}", flush=True)
+            
     except Exception as e:
-        print(f"!!! Resend delivery error: {e}", flush=True)
+        print(f"!!! Error calling Gmail Proxy: {e}", flush=True)
         traceback.print_exc()
 
 async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
@@ -235,7 +241,7 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
         traceback.print_exc()
 
 @app.get("/health")
-async def health(): return {"status": "healthy", "engine": "groq"}
+async def health(): return {"status": "healthy", "engines": ["groq", "gmail-proxy"]}
 
 @app.post("/process-meeting")
 async def process_meeting(request: RetrievalRequest, background_tasks: BackgroundTasks):
