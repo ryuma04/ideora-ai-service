@@ -99,29 +99,52 @@ def generate_mom(transcript: str, brainstorming: str, date: str, participants: L
         raise e
 
 def create_pdf(mom_text: str, output_path: str):
-    print(f"Step 7: Creating PDF (FPDF2)...", flush=True)
+    print(f"Step 7: Creating PDF (Professional HTML format)...", flush=True)
     try:
-        pdf = FPDF()
+        from fpdf import FPDF, HTMLMixin
+        
+        # We use a mixin class to support HTML rendering
+        class MyPDF(FPDF, HTMLMixin):
+            pass
+
+        pdf = MyPDF()
         pdf.add_page()
-        pdf.set_font("Helvetica", size=12)
         
-        # Character cleaning for standard PDF fonts
-        clean_text = mom_text.replace("•", "-").replace("—", "-").replace("**", "")
+        # Convert Markdown to basic HTML for better PDF support
+        # FPDF HTML only supports a subset: h1-h6, b, u, i, p, br, a, img
+        html_content = markdown.markdown(mom_text)
         
-        lines = clean_text.split('\n')
-        for line in lines:
-            safe_line = line.encode('latin-1', 'replace').decode('latin-1')
-            pdf.multi_cell(w=190, h=8, txt=safe_line, align='L')
-            
+        # Basic cleanup: remove bold tags as they sometimes cause issues in old fpdf2 versions
+        # or replace them with something safer if needed, but let's try standard first.
+        
+        pdf.write_html(f"""
+            <font family="helvetica" size="14">
+                {html_content}
+            </font>
+        """)
+        
         pdf.output(output_path)
         print(f"PDF created successfully at {output_path}", flush=True)
         return True
     except Exception as e:
         print(f"PDF creation error: {e}", flush=True)
         traceback.print_exc()
-        return False
+        # Fallback to simple text if HTML fails
+        return create_pdf_simple(mom_text, output_path)
 
-def send_mom_emails(emails: List[str], mom_text: str, pdf_path: str):
+def create_pdf_simple(mom_text: str, output_path: str):
+    try:
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Helvetica", size=12)
+        clean_text = mom_text.replace("•", "-").replace("—", "-").replace("**", "")
+        for line in clean_text.split('\n'):
+            pdf.multi_cell(w=190, h=8, txt=line.encode('latin-1', 'replace').decode('latin-1'), align='L')
+        pdf.output(output_path)
+        return True
+    except: return False
+
+def send_mom_emails(emails: List[str], mom_text: str, pdf_path: str, mom_url: str):
     print(f"Step 10: Sending emails to {emails} via Google Proxy...", flush=True)
     proxy_url = os.getenv("GMAIL_PROXY_URL")
     if not proxy_url:
@@ -134,11 +157,31 @@ def send_mom_emails(emails: List[str], mom_text: str, pdf_path: str):
             with open(pdf_path, "rb") as f:
                 pdf_base64 = base64.b64encode(f.read()).decode('utf-8')
         
+        # Ideora Branding Styles
+        base_styles = "font-family: 'Inter', system-ui, -apple-system, sans-serif; background-color: #f4f7fa; padding: 40px 20px; color: #1e293b; line-height: 1.6;"
+        card_styles = "max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);"
+        header_styles = "background-color: #4f46e5; padding: 32px 20px; text-align: center;"
+        content_styles = "padding: 40px 32px;"
+        button_styles = "display: inline-block; background-color: #4f46e5; color: #ffffff !important; padding: 14px 32px; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 16px;"
+        footer_styles = "background-color: #f8fafc; padding: 24px 32px; text-align: center; border-top: 1px solid #f1f5f9;"
+        current_year = datetime.datetime.now().year
+
         html_body = f"""
-        <div style="font-family: sans-serif; color: #1e293b;">
-            <h2 style="color: #4f46e5;">Meeting Minutes Ready</h2>
-            <p>The Minutes of Meeting (MoM) have been generated and are attached as a PDF.</p>
-            <p>Best regards,<br>The Ideora Team</p>
+        <div style="{base_styles}">
+            <div style="{card_styles}">
+                <div style="{header_styles}"><h1 style="color: #ffffff; margin: 0; font-size: 28px; font-weight: 800;">Ideora</h1></div>
+                <div style="{content_styles}">
+                    <h2 style="margin-top: 0; color: #0f172a; font-size: 20px; font-weight: 700;">Meeting Minutes Ready</h2>
+                    <p style="color: #475569; margin-bottom: 32px;">The Minutes of Meeting (MoM) for your recent session have been generated. You can find the summary below and the full PDF attached to this email.</p>
+                    <div style="text-align: center;">
+                        <a href="{mom_url}" style="{button_styles}">View MoM Online</a>
+                    </div>
+                    <p style="margin-top: 32px; padding-top: 24px; border-top: 1px solid #f1f5f9; color: #94a3b8; font-size: 14px;">
+                        This report was automatically generated by Ideora AI.
+                    </p>
+                </div>
+                <div style="{footer_styles}"><p style="margin: 0; color: #64748b; font-size: 12px;">&copy; {current_year} Ideora. All rights reserved.</p></div>
+            </div>
         </div>
         """
         
@@ -184,6 +227,7 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
         
         # 2. Transcribe
         transcript = transcribe_audio(audio_path)
+        print(f"--- TRANSCRIPTION START ---\n{transcript}\n--- TRANSCRIPTION END ---", flush=True)
         
         # 3. Metadata & MoM
         meeting_date = "Not specified"
@@ -230,7 +274,7 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
                 email = info.split("(")[-1].split(")")[0]
                 if "@" in email: emails.append(email)
         
-        if emails: send_mom_emails(emails, mom_text, pdf_path)
+        if emails: send_mom_emails(emails, mom_text, pdf_path, mom_url)
         
         print(f"--- [DONE] Total time: {time.time() - start_time:.2f}s ---", flush=True)
         if os.path.exists(audio_path): os.remove(audio_path)
