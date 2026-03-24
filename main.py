@@ -9,16 +9,24 @@ import smtplib
 import cloudinary
 import cloudinary.uploader
 import markdown
+import traceback
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import List, Optional
-from weasyprint import HTML, CSS
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart, MIMEBase
 from email.mime.application import MIMEApplication
 from bson import ObjectId
 from groq import Groq
+
+# Conditional import for WeasyPrint
+try:
+    from weasyprint import HTML, CSS
+    WEASYPRINT_AVAILABLE = True
+except Exception as e:
+    print(f"Warning: WeasyPrint not fully available: {e}")
+    WEASYPRINT_AVAILABLE = False
 
 # --- Cross-Platform Library Configuration ---
 if sys.platform == "darwin":
@@ -41,11 +49,14 @@ cloudinary.config(
 )
 
 # MongoDB Configuration
-db_client = pymongo.MongoClient(os.getenv("MONGODB_URL"))
+db_url = os.getenv("MONGODB_URL")
+db_client = pymongo.MongoClient(db_url)
 db = db_client.get_database()
+print(f"Connected to MongoDB: {db.name}", flush=True)
 
 # Groq Configuration
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+groq_api_key = os.getenv("GROQ_API_KEY")
+groq_client = Groq(api_key=groq_api_key)
 
 app = FastAPI(title="Ideora AI Service (Groq Edition)")
 
@@ -55,83 +66,55 @@ class RetrievalRequest(BaseModel):
     brainstormingUrl: Optional[str] = ""
 
 def transcribe_audio(audio_path: str) -> str:
-    print(f"Transcribing {audio_path} using Groq Whisper...")
-    with open(audio_path, "rb") as file:
-        transcription = groq_client.audio.transcriptions.create(
-            file=(os.path.basename(audio_path), file.read()),
-            model="distil-whisper-large-v3-en",
-            response_format="text",
-        )
-    return str(transcription)
+    print(f"Step 3: Transcribing {os.path.basename(audio_path)} using Groq Whisper...", flush=True)
+    try:
+        with open(audio_path, "rb") as file:
+            transcription = groq_client.audio.transcriptions.create(
+                file=(os.path.basename(audio_path), file.read()),
+                model="distil-whisper-large-v3-en",
+                response_format="text",
+            )
+        return str(transcription)
+    except Exception as e:
+        print(f"Transcription error: {e}", flush=True)
+        raise e
 
 def generate_mom(transcript: str, brainstorming: str, date: str, participants: List[str]) -> str:
-    print(f"Generating MoM using Groq Llama 3 for participants: {participants}")
+    print(f"Step 5: Generating MoM using Groq Llama 3 for {len(participants)} participants...", flush=True)
     participants_str = "\n".join([f"- {p}" for p in participants])
     
     prompt = f"""
     Generate a high-quality, professional Minutes of Meeting (MoM) from the following meeting data.
     
-    ---
-    INTELLIGENT TRANSCRIPTION CLEANING:
-    1. The provided TRANSCRIPT is raw speech-to-text and contains phonetic errors.
-    2. CROSS-REFERENCE: Use the BRAINSTORMING REPORT as your primary source of truth for correct spellings.
-    3. PHONETIC CORRECTION: Fix names/terms based on the report.
-    4. GENERAL POLISHING: Remove fillers, fix grammar, ensure professional tone.
-    
-    STRICT FORMATTING RULES:
-    1. NO META-COMMENTS.
-    2. CONSISTENT ORDERING.
-    3. NO HALLUCINATIONS: Use ONLY the provided MEETING DATE and ONLY the listed PARTICIPANTS.
-    ---
-
     MEETING DATE: {date}
-    PARTICIPANTS:
-    {participants_str}
+    PARTICIPANTS: {participants_str}
+    TRANSCRIPT: {transcript}
+    BRAINSTORMING REPORT: {brainstorming}
     
-    TRANSCRIPT:
-    {transcript}
-    
-    BRAINSTORMING REPORT:
-    {brainstorming}
-    
-    REQUIRED STRUCTURE:
-    # Minutes of Meeting: [A Professional, Descriptive Title]
-    
+    Structure:
+    # Minutes of Meeting: Title
     ## 1. General Information
-    - **Date:** [Meeting Date]
-    - **Participants:** [List]
-    
     ## 2. Executive Summary
-    - [A 2-3 sentence overview]
-    
     ## 3. Key Discussion Points
-    - [Summary point 1]
-    - [Summary point 2]
-    
     ## 4. Decisions Made
-    - [Formal list of decisions]
-    
-    ## 5. Action Items
-    | Task | Assigned To | Status |
-    |------|-------------|--------|
-    | [Task] | [Name] | Pending |
-    
+    ## 5. Action Items (Table)
     ## 6. Next Steps
-    - [Upcoming milestones]
-    
-    Format as clean, professional Markdown.
     """
     
-    response = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-        max_tokens=4096
-    )
-    return response.choices[0].message.content
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=4096
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"LLM error: {e}", flush=True)
+        raise e
 
 def get_meeting_metadata(meeting_id: str):
-    print(f"Fetching metadata for meeting {meeting_id}...")
+    print(f"Step 4: Fetching metadata for meeting {meeting_id}...", flush=True)
     participants_info = []
     meeting_date = "Not specified"
     try:
@@ -142,118 +125,156 @@ def get_meeting_metadata(meeting_id: str):
         participants_cursor = db.participants.find({"meetingId": ObjectId(meeting_id)})
         for participant in participants_cursor:
             name = participant.get("name", "Unknown")
-            email = "Not available"
+            email = participant.get("email") or "Not available"
             if participant.get("userId"):
                 user = db.users.find_one({"_id": participant["userId"]})
                 if user and user.get("email"):
                     email = user["email"]
-            elif participant.get("email"):
-                email = participant["email"]
             participants_info.append(f"{name} ({email})")
             
     except Exception as e:
-        print(f"Error fetching metadata: {e}")
+        print(f"Error fetching metadata: {e}", flush=True)
     return meeting_date, list(set(participants_info))
 
 def create_pdf(mom_html_content: str, output_path: str):
-    print(f"Creating PDF at {output_path}...")
-    css_styles = """
-    @page { margin: 2cm; @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 9pt; color: #64748b; } }
-    body { font-family: sans-serif; font-size: 11pt; line-height: 1.6; color: #1e293b; }
-    h1 { color: #4f46e5; border-bottom: 2px solid #e2e8f0; }
-    h2 { color: #334155; border-left: 4px solid #4f46e5; padding-left: 0.3cm; margin-top: 1cm; }
-    table { width: 100%; border-collapse: collapse; margin: 0.8cm 0; }
-    th { background-color: #f8fafc; padding: 12px; border: 1px solid #e2e8f0; }
-    td { padding: 10px; border: 1px solid #e2e8f0; }
-    tr:nth-child(even) { background-color: #f1f5f9; }
-    """
-    full_html = f"<html><head><style>{css_styles}</style></head><body>{mom_html_content}</body></html>"
-    HTML(string=full_html).write_pdf(output_path)
+    if not WEASYPRINT_AVAILABLE:
+        print("Warning: Skipping PDF generation (WeasyPrint not available)", flush=True)
+        return False
+    
+    print(f"Step 7: Creating PDF at {output_path}...", flush=True)
+    try:
+        css_styles = """
+        @page { margin: 2cm; }
+        body { font-family: sans-serif; font-size: 11pt; line-height: 1.6; color: #1e293b; }
+        h1 { color: #4f46e5; border-bottom: 2px solid #e2e8f0; }
+        h2 { color: #334155; border-left: 4px solid #4f46e5; padding-left: 0.3cm; margin-top: 1cm; }
+        table { width: 100%; border-collapse: collapse; margin: 0.8cm 0; }
+        th { background-color: #f8fafc; padding: 12px; border: 1px solid #e2e8f0; }
+        td { padding: 10px; border: 1px solid #e2e8f0; }
+        """
+        full_html = f"<html><head><style>{css_styles}</style></head><body>{mom_html_content}</body></html>"
+        HTML(string=full_html).write_pdf(output_path)
+        return True
+    except Exception as e:
+        print(f"PDF creation error: {e}", flush=True)
+        return False
 
 def send_mom_emails(emails: List[str], mom_text: str, pdf_path: str):
-    print(f"Sending emails to {emails}...")
+    print(f"Step 10: Sending emails to {emails}...", flush=True)
     sender_email = os.getenv("GMAIL_MAIL")
     sender_password = os.getenv("GMAIL_APP_PASSWORD")
     if not sender_email or not sender_password:
-        print("Skipping email: GMAIL credentials not set.")
+        print("Skipping email: GMAIL credentials not set.", flush=True)
         return
 
     msg = MIMEMultipart('mixed')
     msg['From'] = f"Ideora Platform <{sender_email}>"
     msg['Subject'] = "Meeting Minutes Ready - Ideora"
-    
-    html_body = f"<div><h2>Meeting Minutes Ready</h2><p>The MoM is attached as a PDF.</p></div>"
-    msg.attach(MIMEText(html_body, 'html'))
+    msg.attach(MIMEText(f"<h2>Meeting Minutes Ready</h2><p>Attached is the MoM as a PDF.</p>", 'html'))
 
     try:
-        with open(pdf_path, "rb") as f:
-            part = MIMEApplication(f.read(), Name=os.path.basename(pdf_path))
-            part['Content-Disposition'] = f'attachment; filename="{os.path.basename(pdf_path)}"'
-            msg.attach(part)
+        if os.path.exists(pdf_path):
+            with open(pdf_path, "rb") as f:
+                part = MIMEApplication(f.read(), Name=os.path.basename(pdf_path))
+                part['Content-Disposition'] = f'attachment; filename="{os.path.basename(pdf_path)}"'
+                msg.attach(part)
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender_email, sender_password)
             server.sendmail(sender_email, emails, msg.as_string())
-        print("Emails sent successfully!")
+        print("Emails sent successfully!", flush=True)
     except Exception as e:
-        print(f"Failed to send email: {e}")
+        print(f"Failed to send email: {e}", flush=True)
 
 async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
     start_time = time.time()
-    print(f"--- Starting process_task (Groq) for meeting {meetingId} ---")
+    print(f"--- [START] process_task for {meetingId} ---", flush=True)
     try:
         temp_dir = "/tmp/meeting_data"
         os.makedirs(temp_dir, exist_ok=True)
         
         # 1. Download
+        print(f"Step 1: Downloading audio...", flush=True)
         audio_path = f"{temp_dir}/{meetingId}_audio.webm"
-        resp = requests.get(audioUrl)
+        resp = requests.get(audioUrl, timeout=30)
         with open(audio_path, "wb") as f: f.write(resp.content)
+        print(f"Step 1 Done: Audio size {os.path.getsize(audio_path)} bytes", flush=True)
         
         brainstorming_content = ""
         if brainstormingUrl:
-            b_resp = requests.get(brainstormingUrl)
+            print(f"Step 2: Downloading brainstorming...", flush=True)
+            b_resp = requests.get(brainstormingUrl, timeout=10)
             if b_resp.status_code == 200: brainstorming_content = b_resp.text
         
         # 2. Transcribe
         transcript = transcribe_audio(audio_path)
+        print(f"Step 3 Done: Transcript length {len(transcript)}", flush=True)
         
         # 3. Metadata & MoM
         meeting_date, participants = get_meeting_metadata(meetingId)
         mom_text = generate_mom(transcript, brainstorming_content, meeting_date, participants)
+        print(f"Step 5 Done: MoM length {len(mom_text)}", flush=True)
         
-        # 4. PDF
+        # 4. PDF & Cloudinary
         pdf_path = f"{temp_dir}/{meetingId}_MoM.pdf"
-        create_pdf(markdown.markdown(mom_text, extensions=['tables']), pdf_path)
+        pdf_success = create_pdf(markdown.markdown(mom_text, extensions=['tables']), pdf_path)
         
-        # 5. Cloudinary & DB
-        upload = cloudinary.uploader.upload(pdf_path, resource_type="raw", folder="meeting_mom", public_id=f"{meetingId}_MoM")
-        db.meetingresources.update_one({"meetingId": ObjectId(meetingId)}, {"$set": {"momReportUrl": upload["secure_url"]}}, upsert=True)
+        if pdf_success:
+            print(f"Step 8: Uploading PDF...", flush=True)
+            upload = cloudinary.uploader.upload(pdf_path, resource_type="raw", folder="meeting_mom", public_id=f"{meetingId}_MoM")
+            mom_url = upload["secure_url"]
+        else:
+            # Fallback: Just save as text or similar if PDF fails
+            print("Warning: Continuing without PDF upload", flush=True)
+            mom_url = "" # You could upload the text file here as fallback
+        
+        # 5. DB Update
+        print(f"Step 9: Updating MongoDB...", flush=True)
+        # Try both 'meetingResources' and 'meetingresources' collection names
+        try:
+            db.meetingResources.update_one({"meetingId": ObjectId(meetingId)}, {"$set": {"momReportUrl": mom_url}}, upsert=True)
+        except:
+            db.meetingresources.update_one({"meetingId": ObjectId(meetingId)}, {"$set": {"momReportUrl": mom_url}}, upsert=True)
+        print("Step 9 Done: DB updated.", flush=True)
         
         # 6. Emails
         emails = [info.split("(")[-1].split(")")[0] for info in participants if "(" in info and "@" in info]
         if emails: send_mom_emails(emails, mom_text, pdf_path)
         
-        print(f"--- Task completed in {time.time() - start_time:.2f}s ---")
+        print(f"--- [DONE] Total time: {time.time() - start_time:.2f}s ---", flush=True)
         if os.path.exists(audio_path): os.remove(audio_path)
         if os.path.exists(pdf_path): os.remove(pdf_path)
         
     except Exception as e:
-        print(f"!!! Error: {e}")
+        print(f"!!! CRITICAL ERROR in process_task: {e}", flush=True)
+        traceback.print_exc()
 
 @app.get("/health")
-async def health(): return {"status": "healthy", "engine": "groq"}
+async def health(): 
+    return {"status": "healthy", "engine": "groq", "weasyprint": WEASYPRINT_AVAILABLE}
+
+@app.get("/test-groq")
+async def test_groq():
+    try:
+        resp = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": "hello"}],
+            max_tokens=5
+        )
+        return {"status": "ok", "response": resp.choices[0].message.content}
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
 
 @app.get("/test-db")
 async def test_db():
     try:
-        cols = db.list_collection_names()
-        return {"status": "connected", "collections": cols}
-    except Exception as e: return {"status": "failed", "error": str(e)}
+        return {"status": "connected", "collections": db.list_collection_names()}
+    except Exception as e: 
+        return {"status": "failed", "error": str(e)}
 
 @app.post("/process-meeting")
 async def process_meeting(request: RetrievalRequest, background_tasks: BackgroundTasks):
-    print(f"Received meeting {request.meetingId}")
+    print(f"--> Received Request for meeting ID: {request.meetingId}", flush=True)
     background_tasks.add_task(process_task, request.meetingId, request.audioUrl, request.brainstormingUrl)
     return {"success": True, "message": "Groq AI processing started"}
 
