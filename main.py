@@ -208,32 +208,36 @@ def send_mom_emails(emails: List[str], mom_text: str, pdf_path: str, mom_url: st
 
 async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
     start_time = time.time()
+    meetingId = meetingId.strip() # Sanitize input
     print(f"--- [START] process_task for {meetingId} ---", flush=True)
     try:
         temp_dir = "/tmp/meeting_data"
         os.makedirs(temp_dir, exist_ok=True)
         
         # 1. Download
-        print(f"Step 1: Downloading audio...", flush=True)
+        print(f"Step 1: Downloading audio from {audioUrl}...", flush=True)
         audio_path = f"{temp_dir}/{meetingId}_audio.webm"
         resp = requests.get(audioUrl, timeout=30)
+        if resp.status_code != 200:
+            raise Exception(f"Failed to download audio: status {resp.status_code}")
         with open(audio_path, "wb") as f: f.write(resp.content)
         
         brainstorming_content = ""
         if brainstormingUrl:
-            print(f"Step 2: Downloading brainstorming...", flush=True)
+            print(f"Step 2: Downloading brainstorming from {brainstormingUrl}...", flush=True)
             b_resp = requests.get(brainstormingUrl, timeout=10)
             if b_resp.status_code == 200: brainstorming_content = b_resp.text
         
         # 2. Transcribe
         transcript = transcribe_audio(audio_path)
-        print(f"--- TRANSCRIPTION START ---\n{transcript}\n--- TRANSCRIPTION END ---", flush=True)
+        print(f"--- TRANSCRIPTION FINISHED (Length: {len(transcript)}) ---", flush=True)
         
         # 3. Metadata & MoM
         meeting_date = "Not specified"
         participants_info = []
         host_email = ""
         try:
+            print(f"Step 4: Fetching metadata for meeting {meetingId}...", flush=True)
             m_doc = db.meetings.find_one({"_id": ObjectId(meetingId)})
             if m_doc:
                 if m_doc.get("startTime"): meeting_date = str(m_doc["startTime"])
@@ -271,17 +275,19 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
             print(f"CRITICAL Metadata fetching error: {e}", flush=True)
             traceback.print_exc()
             
+        print(f"Step 5: Generating MoM text...", flush=True)
         mom_text = generate_mom(transcript, brainstorming_content, meeting_date, participants_info)
         
         # 4. PDF & Cloudinary
         pdf_path = f"{temp_dir}/{meetingId}_MoM.pdf"
+        print(f"Step 7: Creating PDF document...", flush=True)
         pdf_success = create_pdf(mom_text, pdf_path)
         
         mom_url = ""
         if pdf_success:
             print(f"Step 8: Uploading PDF to Cloudinary...", flush=True)
             # Ensure a unique filename to bypass cached private settings
-            unique_name = f"{meetingId}_MoM_{int(time.time())}.pdf"
+            unique_name = f"{meetingId}_MoM_{int(time.time())}"
             
             upload = cloudinary.uploader.upload(
                 pdf_path, 
@@ -291,13 +297,21 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
                 access_mode="public"
             )
             mom_url = upload.get("secure_url")
-            print(f"MoM Uploaded: {mom_url}", flush=True)
+            print(f"MoM Uploaded Successfully: {mom_url}", flush=True)
+        else:
+            print("Step 7 Failed: PDF creation was not successful.", flush=True)
         
         # 5. DB Update
-        print(f"Step 9: Updating MongoDB collection 'meetingresources'...", flush=True)
-        update_data = {"$set": {"momReportUrl": mom_url}}
-        res = db.meetingresources.update_one({"meetingId": ObjectId(meetingId)}, update_data, upsert=True)
-        print(f"Update Result: matched={res.matched_count}, modified={res.modified_count}", flush=True)
+        if mom_url:
+            print(f"Step 9: Updating MongoDB collection 'meetingresources' for {meetingId}...", flush=True)
+            try:
+                update_data = {"$set": {"momReportUrl": mom_url}}
+                res = db.meetingresources.update_one({"meetingId": ObjectId(meetingId)}, update_data, upsert=True)
+                print(f"Update Result: matched={res.matched_count}, modified={res.modified_count}", flush=True)
+            except Exception as db_err:
+                print(f"CRITICAL: Failed to update database: {db_err}", flush=True)
+        else:
+            print("Step 9 Skipped: No MoM URL available to save.", flush=True)
         
         # 6. Emails
         emails = []
@@ -306,9 +320,13 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
                 email = info.split("(")[-1].split(")")[0]
                 if "@" in email: emails.append(email)
         
-        if emails: send_mom_emails(emails, mom_text, pdf_path, mom_url)
+        if emails and mom_url:
+            print(f"Step 10: Sending emails to {emails}...", flush=True)
+            send_mom_emails(emails, mom_text, pdf_path, mom_url)
+        else:
+            print("Step 10 Skipped: Either no emails or no MoM URL.", flush=True)
         
-        print(f"--- [DONE] Total time: {time.time() - start_time:.2f}s ---", flush=True)
+        print(f"--- [DONE] Total duration: {time.time() - start_time:.2f}s ---", flush=True)
         if os.path.exists(audio_path): os.remove(audio_path)
         if os.path.exists(pdf_path): os.remove(pdf_path)
         
@@ -321,8 +339,9 @@ async def health(): return {"status": "healthy", "engines": ["groq", "gmail-prox
 
 @app.post("/process-meeting")
 async def process_meeting(request: RetrievalRequest, background_tasks: BackgroundTasks):
-    print(f"--> Received Request for meeting ID: {request.meetingId}", flush=True)
-    background_tasks.add_task(process_task, request.meetingId, request.audioUrl, request.brainstormingUrl)
+    processed_id = request.meetingId.strip()
+    print(f"--> Received Request for meeting ID: {processed_id}", flush=True)
+    background_tasks.add_task(process_task, processed_id, request.audioUrl, request.brainstormingUrl)
     return {"success": True, "message": "Groq AI processing started"}
 
 if __name__ == "__main__":
