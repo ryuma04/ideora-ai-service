@@ -238,7 +238,7 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
             if m_doc:
                 if m_doc.get("startTime"): meeting_date = str(m_doc["startTime"])
                 
-                # Fetch Host Email
+                # Fetch Host Email directly from meeting creator
                 host_id = m_doc.get("createdBy")
                 if host_id:
                     host_user = db.users.find_one({"_id": host_id})
@@ -249,19 +249,27 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
             p_cursor = db.participants.find({"meetingId": ObjectId(meetingId)})
             for p in p_cursor:
                 name = p.get("name", "Unknown")
-                email = p.get("email") or "Not available"
-                if p.get("userId"):
+                # Priority: Participant collection email -> linked User email
+                email = p.get("email")
+                if not email and p.get("userId"):
                     u = db.users.find_one({"_id": p["userId"]})
                     if u and u.get("email"): email = u["email"]
+                
+                email = email or "Not available"
                 participants_info.append(f"{name} ({email})")
+                print(f"Participant processed: {name} <{email}>", flush=True)
             
-            # Explicitly add host email if found
+            # Ensure host is in the list with their email
             if host_email:
-                participants_info.append(f"Host ({host_email})")
+                host_entry = f"Host ({host_email})"
+                if not any(host_email in p for p in participants_info):
+                    participants_info.append(host_entry)
                 
             participants_info = list(set(participants_info))
+            print(f"Final participant list for MoM: {participants_info}", flush=True)
         except Exception as e:
-            print(f"Metadata error: {e}", flush=True)
+            print(f"CRITICAL Metadata fetching error: {e}", flush=True)
+            traceback.print_exc()
             
         mom_text = generate_mom(transcript, brainstorming_content, meeting_date, participants_info)
         
