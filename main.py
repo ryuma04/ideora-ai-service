@@ -1,7 +1,7 @@
 import os
+import time
 import datetime
 import sys
-import time
 import requests
 import uvicorn
 import pymongo
@@ -232,9 +232,19 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
         # 3. Metadata & MoM
         meeting_date = "Not specified"
         participants_info = []
+        host_email = ""
         try:
             m_doc = db.meetings.find_one({"_id": ObjectId(meetingId)})
-            if m_doc and m_doc.get("startTime"): meeting_date = str(m_doc["startTime"])
+            if m_doc:
+                if m_doc.get("startTime"): meeting_date = str(m_doc["startTime"])
+                
+                # Fetch Host Email
+                host_id = m_doc.get("createdBy")
+                if host_id:
+                    host_user = db.users.find_one({"_id": host_id})
+                    if host_user and host_user.get("email"):
+                        host_email = host_user["email"]
+                        print(f"Host identified: {host_email}", flush=True)
             
             p_cursor = db.participants.find({"meetingId": ObjectId(meetingId)})
             for p in p_cursor:
@@ -244,6 +254,11 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
                     u = db.users.find_one({"_id": p["userId"]})
                     if u and u.get("email"): email = u["email"]
                 participants_info.append(f"{name} ({email})")
+            
+            # Explicitly add host email if found
+            if host_email:
+                participants_info.append(f"Host ({host_email})")
+                
             participants_info = list(set(participants_info))
         except Exception as e:
             print(f"Metadata error: {e}", flush=True)
@@ -256,10 +271,19 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
         
         mom_url = ""
         if pdf_success:
-            print(f"Step 8: Uploading PDF...", flush=True)
-            upload = cloudinary.uploader.upload(pdf_path, resource_type="raw", folder="meeting_mom", public_id=f"{meetingId}_MoM")
-            mom_url = upload["secure_url"]
-            print(f"Uploaded: {mom_url}", flush=True)
+            print(f"Step 8: Uploading PDF to Cloudinary...", flush=True)
+            # Ensure a unique filename to bypass cached private settings
+            unique_name = f"{meetingId}_MoM_{int(time.time())}.pdf"
+            
+            upload = cloudinary.uploader.upload(
+                pdf_path, 
+                resource_type="raw", 
+                folder="meeting_mom", 
+                public_id=unique_name,
+                access_mode="public"
+            )
+            mom_url = upload.get("secure_url")
+            print(f"MoM Uploaded: {mom_url}", flush=True)
         
         # 5. DB Update
         print(f"Step 9: Updating MongoDB collection 'meetingresources'...", flush=True)
