@@ -246,7 +246,6 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
                 host_id = m_doc.get("createdBy")
                 if host_id:
                     try:
-                        from bson.objectid import ObjectId
                         safe_host_id = host_id if isinstance(host_id, ObjectId) else ObjectId(str(host_id))
                         host_user = db.users.find_one({"_id": safe_host_id})
                         if host_user and host_user.get("email"):
@@ -262,7 +261,6 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
                 email = p.get("email")
                 if not email and p.get("userId"):
                     try:
-                        from bson.objectid import ObjectId
                         uid = p.get("userId")
                         safe_uid = uid if isinstance(uid, ObjectId) else ObjectId(str(uid))
                         u = db.users.find_one({"_id": safe_uid})
