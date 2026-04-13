@@ -245,10 +245,15 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
                 # Fetch Host Email directly from meeting creator
                 host_id = m_doc.get("createdBy")
                 if host_id:
-                    host_user = db.users.find_one({"_id": host_id})
-                    if host_user and host_user.get("email"):
-                        host_email = host_user["email"]
-                        print(f"Host identified: {host_email}", flush=True)
+                    try:
+                        from bson.objectid import ObjectId
+                        safe_host_id = host_id if isinstance(host_id, ObjectId) else ObjectId(str(host_id))
+                        host_user = db.users.find_one({"_id": safe_host_id})
+                        if host_user and host_user.get("email"):
+                            host_email = host_user["email"]
+                            print(f"Host identified: {host_email}", flush=True)
+                    except Exception as e:
+                        print(f"Failed to fetch host user: {e}", flush=True)
             
             p_cursor = db.participants.find({"meetingId": ObjectId(meetingId)})
             for p in p_cursor:
@@ -256,8 +261,14 @@ async def process_task(meetingId: str, audioUrl: str, brainstormingUrl: str):
                 # Priority: Participant collection email -> linked User email
                 email = p.get("email")
                 if not email and p.get("userId"):
-                    u = db.users.find_one({"_id": p["userId"]})
-                    if u and u.get("email"): email = u["email"]
+                    try:
+                        from bson.objectid import ObjectId
+                        uid = p.get("userId")
+                        safe_uid = uid if isinstance(uid, ObjectId) else ObjectId(str(uid))
+                        u = db.users.find_one({"_id": safe_uid})
+                        if u and u.get("email"): email = u["email"]
+                    except Exception as e:
+                        print(f"Failed to fetch participant user: {e}", flush=True)
                 
                 email = email or "Not available"
                 participants_info.append(f"{name} ({email})")
